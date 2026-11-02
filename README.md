@@ -36,12 +36,8 @@ Python 3.12, FastAPI, SQLAlchemy 2 (async), Alembic, PostgreSQL 16, RabbitMQ (Fa
 
 ## Документация
 
+- [OpenAPI v1](docs/openapi.yaml) - API раздела «Билеты и записи» архитектуры.
+- [Модель данных](docs/data-model.md) - таблицы записей, билетов, резервов и платежей, коды ошибок.
+
 Wiki проекта: https://ai.nsu.ru/projects/tusumba/wiki/Архитектура. Контракт API: OpenAPI v1 (#18892). Задачи ведутся в Redmine: https://ai.nsu.ru/projects/tusumba. Issues и Wiki GitHub выключены.
 
-## Правила работы
-
-Ветки, коммиты, pull request и code review описаны в [CONTRIBUTING.md](https://github.com/tusumba/.github/blob/main/CONTRIBUTING.md). Коротко:
-
-- ветка называется `feature/<номер задачи Redmine>-<пара слов>`, например `feature/18901-login`;
-- номер задачи указывается в каждом коммите и в названии PR;
-- в `main` изменения попадают только через PR с одним одобрением и зелёным CI, прямой push и force push запрещены.

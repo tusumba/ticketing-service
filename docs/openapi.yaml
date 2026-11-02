@@ -1,0 +1,675 @@
+openapi: 3.0.3
+info:
+  title: Tusumba Ticketing & Payments API
+  version: 1.0.0
+  description: |
+    API сервиса Ticketing & Payments по разделу «Билеты и записи» архитектуры Tusumba.
+    Запись на бесплатные мероприятия, мои записи и билеты, список участников.
+    Продажа и покупка билетов описаны черновиком (x-draft: true), реализация в Спринте 3.
+    Внешний API доступен через API Gateway. Доступ - зарегистрированный пользователь.
+
+    Все ошибки возвращаются в едином формате Error: машинный код `code`
+    и сообщение `message`, которое клиент показывает пользователю.
+  x-task: https://ai.nsu.ru/issues/18892
+externalDocs:
+  description: Архитектура Tusumba
+  url: https://ai.nsu.ru/projects/tusumba/wiki/Архитектура
+security:
+  - BearerAuth: []
+tags:
+  - name: registrations
+    description: Записи на бесплатные мероприятия
+  - name: tickets
+    description: Билеты пользователя
+  - name: participants
+    description: Участники мероприятия
+  - name: sales
+    description: Продажа и покупка билетов (черновик, Спринт 3)
+paths:
+  /v1/events/{id}/registration:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    put:
+      tags: [registrations]
+      operationId: registerForEvent
+      summary: Записаться на бесплатное мероприятие или изменить запись
+      description: |
+        Создаёт запись текущего пользователя на мероприятие. Если запись уже есть,
+        меняет её видимость (запрос идемпотентный).
+        Записаться можно только на опубликованное бесплатное мероприятие, которое ещё не прошло.
+        Мероприятие считается платным, если для него есть настройки продажи (ticket_sales_settings).
+        Дата и статус мероприятия запрашиваются у events-service.
+        После изменения публикуется событие RegistrationChanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationRequest'
+      responses:
+        '200':
+          description: Запись изменена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Registration'
+        '201':
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Registration'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EventNotFound'
+        '409':
+          description: |
+            Записаться нельзя. Коды:
+            `event_is_paid` - мероприятие платное, нужно купить билет;
+            `event_finished` - мероприятие уже прошло;
+            `event_not_published` - мероприятие не опубликовано.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: event_finished
+                message: Мероприятие уже прошло.
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [registrations]
+      operationId: cancelRegistration
+      summary: Отменить запись на мероприятие
+      description: |
+        Удаляет запись текущего пользователя. На прошедшее мероприятие запись не отменяется.
+        После удаления публикуется событие RegistrationChanged.
+      responses:
+        '204':
+          description: Запись отменена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: |
+            Коды: `event_not_found` - мероприятие не найдено;
+            `registration_not_found` - пользователь не записан на мероприятие.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: registration_not_found
+                message: Вы не записаны на это мероприятие.
+        '409':
+          description: '`event_finished` - мероприятие уже прошло.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/me/registrations:
+    get:
+      tags: [registrations]
+      operationId: listMyRegistrations
+      summary: Мои записи на мероприятия
+      description: Записи текущего пользователя, отсортированные по дате создания (новые первыми).
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список записей
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/me/tickets:
+    get:
+      tags: [tickets]
+      operationId: listMyTickets
+      summary: Мои билеты
+      description: Купленные билеты текущего пользователя (статус sold), новые первыми.
+      parameters:
+        - name: event_id
+          in: query
+          required: false
+          description: Только билеты на это мероприятие
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список билетов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/tickets/{id}:
+    get:
+      tags: [tickets]
+      operationId: getTicket
+      summary: Билет
+      description: Билет доступен только его владельцу. Чужой билет возвращает 404, чтобы не раскрывать его существование.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Идентификатор билета
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Билет
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: '`ticket_not_found` - билет не найден.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/events/{id}/participants:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [participants]
+      operationId: listParticipants
+      summary: Список участников мероприятия
+      description: |
+        Участники - пользователи с записью (бесплатное мероприятие) или с купленным билетом (платное).
+        Что видит пользователь:
+        - команда мероприятия (владелец, администратор, контролёр) видит всех участников;
+        - остальные видят участников с видимостью `public` и `friends`, если участник у них в друзьях;
+          анонимные и скрытые участники входят только в `hidden_count`.
+        Роль запрашивается у events-service, друзья - у identity-service.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Список участников
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EventNotFound'
+  /v1/events/{id}/ticket-settings:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [sales]
+      x-draft: true
+      operationId: getTicketSettings
+      summary: Настройки продажи билетов (черновик)
+      description: Доступно всем пользователям, чтобы показать цену и остаток билетов.
+      responses:
+        '200':
+          description: Настройки продажи
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: |
+            `event_not_found` - мероприятие не найдено;
+            `ticket_settings_not_found` - продажа билетов не настроена (мероприятие бесплатное).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags: [sales]
+      x-draft: true
+      operationId: updateTicketSettings
+      summary: Настроить продажу билетов (черновик)
+      description: |
+        Доступно владельцу и администратору мероприятия (роль проверяется у events-service).
+        При сохранении создаются недостающие строки tickets со статусом available.
+        Уменьшить количество ниже числа проданных и зарезервированных билетов нельзя.
+        Настроить продажу для мероприятия, на которое уже есть записи, нельзя.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketSettingsRequest'
+      responses:
+        '200':
+          description: Настройки сохранены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/EventNotFound'
+        '409':
+          description: |
+            `quantity_below_sold` - количество меньше уже проданных и зарезервированных билетов;
+            `event_has_registrations` - на мероприятие уже есть бесплатные записи.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/events/{id}/purchases:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [sales]
+      x-draft: true
+      operationId: createPurchase
+      summary: Купить билеты (черновик)
+      description: |
+        Резервирует нужное количество билетов в одной транзакции
+        (`SELECT ... FOR UPDATE SKIP LOCKED`) на 15 минут и создаёт платёж у провайдера.
+        Клиент переходит по `confirmation_url` для оплаты.
+        Если оплата не пришла до `expires_at`, фоновая задача возвращает билеты в продажу.
+        Заголовок Idempotency-Key защищает от двойной покупки при повторе запроса:
+        повтор с тем же ключом возвращает уже созданную покупку.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Уникальный ключ запроса, генерируется клиентом (UUID)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseRequest'
+      responses:
+        '201':
+          description: Билеты зарезервированы, платёж создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Purchase'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EventNotFound'
+        '409':
+          description: |
+            `tickets_sold_out` - свободных билетов меньше, чем запрошено;
+            `sales_closed` - продажа не открыта или мероприятие прошло;
+            `event_is_free` - мероприятие бесплатное, нужна запись.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: tickets_sold_out
+                message: Билеты закончились.
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '502':
+          description: '`payment_provider_error` - платёжный провайдер недоступен, резерв отменён.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /v1/purchases/{id}:
+    get:
+      tags: [sales]
+      x-draft: true
+      operationId: getPurchase
+      summary: Статус покупки (черновик)
+      description: Клиент опрашивает статус после возврата со страницы оплаты. Доступно только покупателю.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Идентификатор покупки (reservations.id)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Покупка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Purchase'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: '`purchase_not_found` - покупка не найдена.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /webhooks/payments:
+    post:
+      tags: [sales]
+      x-draft: true
+      operationId: paymentWebhook
+      summary: Уведомление платёжного провайдера (черновик)
+      description: |
+        Вызывается провайдером, а не клиентом, поэтому без JWT. Подпись запроса проверяется
+        по правилам провайдера. Обработка идемпотентная: повторное уведомление
+        с тем же статусом платежа ничего не меняет.
+        При успешной оплате билеты переходят в sold, покупка - в paid,
+        публикуется событие TicketPurchased.
+        Формат тела задаёт провайдер (кандидат - ЮKassa), здесь он не фиксируется.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Уведомление принято (в том числе повторное)
+        '400':
+          description: '`invalid_signature` - подпись не прошла проверку.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 проверяется каждым сервисом по публичному ключу Identity.
+  parameters:
+    EventId:
+      name: id
+      in: path
+      required: true
+      description: Идентификатор мероприятия (events_db.events.id)
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Размер страницы
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Сколько элементов пропустить
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+  responses:
+    Unauthorized:
+      description: '`unauthorized` - нет токена или токен недействителен.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: unauthorized
+            message: Войдите в аккаунт.
+    Forbidden:
+      description: '`forbidden` - у пользователя нет нужной роли в команде мероприятия.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: forbidden
+            message: Недостаточно прав.
+    EventNotFound:
+      description: '`event_not_found` - мероприятие не найдено.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: event_not_found
+            message: Мероприятие не найдено.
+    ValidationError:
+      description: '`validation_error` - тело или параметры запроса не прошли проверку.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: validation_error
+            message: Проверьте введённые данные.
+            details:
+              - field: quantity
+                message: Значение должно быть от 1 до 10.
+  schemas:
+    Error:
+      type: object
+      description: Ошибка
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Машинный код ошибки
+        message:
+          type: string
+          description: Сообщение для пользователя
+        details:
+          type: array
+          description: Ошибки по отдельным полям (для validation_error)
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+    Visibility:
+      type: string
+      description: |
+        Кто видит участника в списке:
+        public - все; friends - только друзья; anonymous - никто, кроме команды мероприятия.
+      enum: [public, friends, anonymous]
+    RegistrationRequest:
+      type: object
+      properties:
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+    Registration:
+      type: object
+      description: Запись на бесплатное мероприятие
+      required: [id, event_id, visibility, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        created_at:
+          type: string
+          format: date-time
+    RegistrationPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Registration'
+        total:
+          type: integer
+    Money:
+      type: object
+      description: Сумма в минимальных единицах валюты (копейках)
+      required: [amount, currency]
+      properties:
+        amount:
+          type: integer
+          minimum: 0
+          example: 50000
+        currency:
+          type: string
+          enum: [RUB]
+    Ticket:
+      type: object
+      description: Купленный билет
+      required: [id, event_id, code, price, purchased_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          description: Код билета для QR, по нему билет проверяет контролёр
+        price:
+          $ref: '#/components/schemas/Money'
+        purchased_at:
+          type: string
+          format: date-time
+    TicketPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+        total:
+          type: integer
+    Participant:
+      type: object
+      description: Участник мероприятия. Имя и аватар клиент берёт у identity-service по user_id.
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        is_friend:
+          type: boolean
+          description: Участник в друзьях у текущего пользователя
+    ParticipantPage:
+      type: object
+      required: [items, total, hidden_count]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+        total:
+          type: integer
+          description: Сколько всего участников видно текущему пользователю
+        hidden_count:
+          type: integer
+          description: Сколько участников скрыто от текущего пользователя
+    TicketSettingsRequest:
+      type: object
+      required: [price, quantity, sales_open]
+      properties:
+        price:
+          $ref: '#/components/schemas/Money'
+        quantity:
+          type: integer
+          minimum: 1
+          description: Сколько всего билетов продаётся
+        sales_open:
+          type: boolean
+          description: Открыта ли продажа
+    TicketSettings:
+      type: object
+      required: [event_id, price, quantity, available, sales_open]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        price:
+          $ref: '#/components/schemas/Money'
+        quantity:
+          type: integer
+        available:
+          type: integer
+          description: Сколько билетов можно купить сейчас (status = available)
+        sales_open:
+          type: boolean
+    PurchaseRequest:
+      type: object
+      required: [quantity]
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Сколько билетов купить
+    PurchaseStatus:
+      type: string
+      description: |
+        pending - билеты зарезервированы, ждём оплату;
+        paid - оплачено, билеты выданы;
+        expired - время резерва вышло, билеты вернулись в продажу;
+        failed - платёж отклонён, билеты вернулись в продажу.
+      enum: [pending, paid, expired, failed]
+    Purchase:
+      type: object
+      description: Покупка билетов (строка reservations)
+      required: [id, event_id, status, quantity, total, expires_at, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PurchaseStatus'
+        quantity:
+          type: integer
+        total:
+          $ref: '#/components/schemas/Money'
+        confirmation_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Страница оплаты провайдера, есть пока статус pending
+        expires_at:
+          type: string
+          format: date-time
+          description: До какого времени держится резерв
+        tickets:
+          type: array
+          description: Выданные билеты, есть при статусе paid
+          items:
+            $ref: '#/components/schemas/Ticket'
+        created_at:
+          type: string
+          format: date-time
