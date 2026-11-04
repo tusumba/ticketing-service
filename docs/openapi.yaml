@@ -4,12 +4,18 @@ info:
   version: 1.0.0
   description: |
     API сервиса Ticketing & Payments по разделу «Билеты и записи» архитектуры Tusumba.
-    Запись на бесплатные мероприятия, мои записи и билеты, список участников.
+    Запись на бесплатные мероприятия, мои записи и билеты, список участников,
+    кто из друзей идёт на мероприятие.
     Продажа и покупка билетов описаны черновиком (x-draft: true), реализация в Спринте 3.
     Внешний API доступен через API Gateway. Доступ - зарегистрированный пользователь.
 
-    Все ошибки возвращаются в едином формате Error: машинный код `code`
-    и сообщение `message`, которое клиент показывает пользователю.
+    Общие правила:
+    - ошибки: объект `error` с машинным кодом `code` и сообщением `message` для пользователя
+      (#18886), для `validation_error` дополнительно `details` по полям;
+    - списки: параметры `page` (с 1) и `size` (по умолчанию 20, максимум 100),
+      ответ `items`, `total`, `page`, `size`;
+    - платное мероприятие или бесплатное, определяет `is_free` из `GET /internal/events/{id}`
+      events-service; цена покупки берётся из настроек продажи (`ticket_sales_settings`).
   x-task: https://ai.nsu.ru/issues/18892
 externalDocs:
   description: Архитектура Tusumba
@@ -18,7 +24,7 @@ security:
   - BearerAuth: []
 tags:
   - name: registrations
-    description: Записи на бесплатные мероприятия
+    description: Записи на мероприятия
   - name: tickets
     description: Билеты пользователя
   - name: participants
@@ -34,11 +40,10 @@ paths:
       operationId: registerForEvent
       summary: Записаться на бесплатное мероприятие или изменить запись
       description: |
-        Создаёт запись текущего пользователя на мероприятие. Если запись уже есть,
-        меняет её видимость (запрос идемпотентный).
-        Записаться можно только на опубликованное бесплатное мероприятие, которое ещё не прошло.
-        Мероприятие считается платным, если для него есть настройки продажи (ticket_sales_settings).
-        Дата и статус мероприятия запрашиваются у events-service.
+        Сохраняет выбор пользователя: «Пойду» (`going`) или «Интересно» (`interested`) (#18115).
+        Если запись уже есть, меняет её статус и видимость (запрос идемпотентный).
+        Записаться можно только на бесплатное мероприятие, которое ещё не прошло.
+        Признак `is_free` и дата запрашиваются у events-service (`GET /internal/events/{id}`).
         После изменения публикуется событие RegistrationChanged.
       requestBody:
         required: true
@@ -67,15 +72,15 @@ paths:
           description: |
             Записаться нельзя. Коды:
             `event_is_paid` - мероприятие платное, нужно купить билет;
-            `event_finished` - мероприятие уже прошло;
-            `event_not_published` - мероприятие не опубликовано.
+            `event_finished` - мероприятие уже прошло.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: event_finished
-                message: Мероприятие уже прошло.
+                error:
+                  code: event_finished
+                  message: Мероприятие уже прошло.
         '422':
           $ref: '#/components/responses/ValidationError'
     delete:
@@ -84,6 +89,7 @@ paths:
       summary: Отменить запись на мероприятие
       description: |
         Удаляет запись текущего пользователя. На прошедшее мероприятие запись не отменяется.
+        Запись, созданную покупкой билета (`source = ticket`), отменить нельзя.
         После удаления публикуется событие RegistrationChanged.
       responses:
         '204':
@@ -99,10 +105,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: registration_not_found
-                message: Вы не записаны на это мероприятие.
+                error:
+                  code: registration_not_found
+                  message: Вы не записаны на это мероприятие.
         '409':
-          description: '`event_finished` - мероприятие уже прошло.'
+          description: |
+            `event_finished` - мероприятие уже прошло;
+            `registration_from_ticket` - запись создана покупкой билета.
           content:
             application/json:
               schema:
@@ -112,10 +121,12 @@ paths:
       tags: [registrations]
       operationId: listMyRegistrations
       summary: Мои записи на мероприятия
-      description: Записи текущего пользователя, отсортированные по дате создания (новые первыми).
+      description: |
+        Записи текущего пользователя, отсортированные по дате создания (новые первыми).
+        Запись, созданная покупкой билета, отмечена `source = ticket`.
       parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
       responses:
         '200':
           description: Список записей
@@ -125,6 +136,8 @@ paths:
                 $ref: '#/components/schemas/RegistrationPage'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /v1/me/tickets:
     get:
       tags: [tickets]
@@ -139,8 +152,8 @@ paths:
           schema:
             type: string
             format: uuid
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
       responses:
         '200':
           description: Список билетов
@@ -150,6 +163,8 @@ paths:
                 $ref: '#/components/schemas/TicketPage'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /v1/tickets/{id}:
     get:
       tags: [tickets]
@@ -187,15 +202,13 @@ paths:
       operationId: listParticipants
       summary: Список участников мероприятия
       description: |
-        Участники - пользователи с записью (бесплатное мероприятие) или с купленным билетом (платное).
-        Что видит пользователь:
-        - команда мероприятия (владелец, администратор, контролёр) видит всех участников;
-        - остальные видят участников с видимостью `public` и `friends`, если участник у них в друзьях;
-          анонимные и скрытые участники входят только в `hidden_count`.
-        Роль запрашивается у events-service, друзья - у identity-service.
+        Участники - пользователи с бесплатной записью или купленным билетом, тип участия - в `source` (#18100).
+        Доступно владельцу и администратору мероприятия (роль проверяется у events-service),
+        остальным - 403. Анонимный участник возвращается без `user_id` и без персональных данных.
+        Пустой список - штатный ответ 200.
       parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
       responses:
         '200':
           description: Список участников
@@ -205,8 +218,40 @@ paths:
                 $ref: '#/components/schemas/ParticipantPage'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/EventNotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/events/{id}/friends-going:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [participants]
+      operationId: listFriendsGoing
+      summary: Кто из друзей идёт на мероприятие
+      description: |
+        Друзья текущего пользователя с записью на это мероприятие: «Пойду», «Интересно»
+        или купленный билет (#18118). Друзья с видимостью `anonymous` не показываются.
+        Список друзей запрашивается у identity-service (`GET /internal/users/{id}/friends`).
+        Если никто из друзей не идёт, ответ 200 с пустым `items`.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Друзья, которые идут на мероприятие
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FriendGoingPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EventNotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /v1/events/{id}/ticket-settings:
     parameters:
       - $ref: '#/components/parameters/EventId'
@@ -228,7 +273,7 @@ paths:
         '404':
           description: |
             `event_not_found` - мероприятие не найдено;
-            `ticket_settings_not_found` - продажа билетов не настроена (мероприятие бесплатное).
+            `ticket_settings_not_found` - продажа билетов не настроена.
           content:
             application/json:
               schema:
@@ -242,7 +287,8 @@ paths:
         Доступно владельцу и администратору мероприятия (роль проверяется у events-service).
         При сохранении создаются недостающие строки tickets со статусом available.
         Уменьшить количество ниже числа проданных и зарезервированных билетов нельзя.
-        Настроить продажу для мероприятия, на которое уже есть записи, нельзя.
+        Настроить продажу можно только для платного мероприятия (`is_free = false` у events-service).
+        Если мероприятие было бесплатным и на него уже есть бесплатные записи, настроить продажу нельзя.
       requestBody:
         required: true
         content:
@@ -265,7 +311,8 @@ paths:
         '409':
           description: |
             `quantity_below_sold` - количество меньше уже проданных и зарезервированных билетов;
-            `event_has_registrations` - на мероприятие уже есть бесплатные записи.
+            `event_is_free` - мероприятие бесплатное, настройка продажи не нужна;
+            `event_has_registrations` - на мероприятие уже есть записи с `source = free_signup`.
           content:
             application/json:
               schema:
@@ -315,15 +362,16 @@ paths:
         '409':
           description: |
             `tickets_sold_out` - свободных билетов меньше, чем запрошено;
-            `sales_closed` - продажа не открыта или мероприятие прошло;
+            `sales_closed` - продажа не настроена, не открыта или мероприятие прошло;
             `event_is_free` - мероприятие бесплатное, нужна запись.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                code: tickets_sold_out
-                message: Билеты закончились.
+                error:
+                  code: tickets_sold_out
+                  message: Билеты закончились.
         '422':
           $ref: '#/components/responses/ValidationError'
         '502':
@@ -372,8 +420,8 @@ paths:
         Вызывается провайдером, а не клиентом, поэтому без JWT. Подпись запроса проверяется
         по правилам провайдера. Обработка идемпотентная: повторное уведомление
         с тем же статусом платежа ничего не меняет.
-        При успешной оплате билеты переходят в sold, покупка - в paid,
-        публикуется событие TicketPurchased.
+        При успешной оплате билеты переходят в sold, покупка - в paid, создаётся запись
+        на мероприятие (`source = ticket`), обновляется `sales_stats`, публикуется событие TicketPurchased.
         Формат тела задаёт провайдер (кандидат - ЮKassa), здесь он не фиксируется.
       security: []
       requestBody:
@@ -407,8 +455,17 @@ components:
       schema:
         type: string
         format: uuid
-    Limit:
-      name: limit
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Номер страницы, с 1
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
       in: query
       required: false
       description: Размер страницы
@@ -417,15 +474,6 @@ components:
         minimum: 1
         maximum: 100
         default: 20
-    Offset:
-      name: offset
-      in: query
-      required: false
-      description: Сколько элементов пропустить
-      schema:
-        type: integer
-        minimum: 0
-        default: 0
   responses:
     Unauthorized:
       description: '`unauthorized` - нет токена или токен недействителен.'
@@ -434,8 +482,9 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: unauthorized
-            message: Войдите в аккаунт.
+            error:
+              code: unauthorized
+              message: Войдите, чтобы выполнить это действие.
     Forbidden:
       description: '`forbidden` - у пользователя нет нужной роли в команде мероприятия.'
       content:
@@ -443,8 +492,9 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: forbidden
-            message: Недостаточно прав.
+            error:
+              code: forbidden
+              message: Недостаточно прав.
     EventNotFound:
       description: '`event_not_found` - мероприятие не найдено.'
       content:
@@ -452,8 +502,9 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: event_not_found
-            message: Мероприятие не найдено.
+            error:
+              code: event_not_found
+              message: Мероприятие не найдено.
     ValidationError:
       description: '`validation_error` - тело или параметры запроса не прошли проверку.'
       content:
@@ -461,48 +512,67 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
           example:
-            code: validation_error
-            message: Проверьте введённые данные.
-            details:
-              - field: quantity
-                message: Значение должно быть от 1 до 10.
+            error:
+              code: validation_error
+              message: Проверьте введённые данные.
+              details:
+                - field: quantity
+                  message: Значение должно быть от 1 до 10.
   schemas:
     Error:
       type: object
-      description: Ошибка
-      required: [code, message]
+      description: Ошибка в едином формате всех сервисов (tusumba-common, #18886)
+      required: [error]
       properties:
-        code:
-          type: string
-          description: Машинный код ошибки
-        message:
-          type: string
-          description: Сообщение для пользователя
-        details:
-          type: array
-          description: Ошибки по отдельным полям (для validation_error)
-          items:
-            type: object
-            properties:
-              field:
-                type: string
-              message:
-                type: string
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Машинный код ошибки для клиента
+            message:
+              type: string
+              description: Сообщение для пользователя
+            details:
+              type: array
+              description: Ошибки по отдельным полям (для validation_error)
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
     Visibility:
       type: string
       description: |
-        Кто видит участника в списке:
-        public - все; friends - только друзья; anonymous - никто, кроме команды мероприятия.
-      enum: [public, friends, anonymous]
+        Кто видит участника:
+        public - все; friends_only - только друзья; anonymous - имя скрыто от всех,
+        организатор видит запись без персональных данных.
+      enum: [public, friends_only, anonymous]
+    RegistrationStatus:
+      type: string
+      description: going - «Пойду»; interested - «Интересно».
+      enum: [going, interested]
+    RegistrationSource:
+      type: string
+      description: free_signup - бесплатная запись; ticket - запись создана покупкой билета.
+      enum: [free_signup, ticket]
     RegistrationRequest:
       type: object
+      required: [status]
       properties:
+        status:
+          $ref: '#/components/schemas/RegistrationStatus'
         visibility:
           $ref: '#/components/schemas/Visibility'
+      description: Если `visibility` не передана, новая запись получает `public`, у существующей видимость не меняется.
     Registration:
       type: object
-      description: Запись на бесплатное мероприятие
-      required: [id, event_id, visibility, created_at]
+      description: Запись пользователя на мероприятие
+      required: [id, event_id, status, visibility, source, created_at]
       properties:
         id:
           type: string
@@ -510,20 +580,28 @@ components:
         event_id:
           type: string
           format: uuid
+        status:
+          $ref: '#/components/schemas/RegistrationStatus'
         visibility:
           $ref: '#/components/schemas/Visibility'
+        source:
+          $ref: '#/components/schemas/RegistrationSource'
         created_at:
           type: string
           format: date-time
     RegistrationPage:
       type: object
-      required: [items, total]
+      required: [items, total, page, size]
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/Registration'
         total:
+          type: integer
+        page:
+          type: integer
+        size:
           type: integer
     Money:
       type: object
@@ -550,7 +628,7 @@ components:
           format: uuid
         code:
           type: string
-          description: Код билета для QR, по нему билет проверяет контролёр
+          description: Код билета для QR, билет предъявляется на входе (#18116)
         price:
           $ref: '#/components/schemas/Money'
         purchased_at:
@@ -558,7 +636,7 @@ components:
           format: date-time
     TicketPage:
       type: object
-      required: [items, total]
+      required: [items, total, page, size]
       properties:
         items:
           type: array
@@ -566,22 +644,33 @@ components:
             $ref: '#/components/schemas/Ticket'
         total:
           type: integer
+        page:
+          type: integer
+        size:
+          type: integer
     Participant:
       type: object
-      description: Участник мероприятия. Имя и аватар клиент берёт у identity-service по user_id.
-      required: [user_id]
+      description: |
+        Участник мероприятия в списке организатора. Имя клиент получает у identity-service
+        по `user_id`. У анонимного участника `user_id` равен null.
+      required: [registration_id, user_id, status, visibility, source]
       properties:
+        registration_id:
+          type: string
+          format: uuid
         user_id:
           type: string
           format: uuid
+          nullable: true
+        status:
+          $ref: '#/components/schemas/RegistrationStatus'
         visibility:
           $ref: '#/components/schemas/Visibility'
-        is_friend:
-          type: boolean
-          description: Участник в друзьях у текущего пользователя
+        source:
+          $ref: '#/components/schemas/RegistrationSource'
     ParticipantPage:
       type: object
-      required: [items, total, hidden_count]
+      required: [items, total, page, size]
       properties:
         items:
           type: array
@@ -589,10 +678,36 @@ components:
             $ref: '#/components/schemas/Participant'
         total:
           type: integer
-          description: Сколько всего участников видно текущему пользователю
-        hidden_count:
+        page:
           type: integer
-          description: Сколько участников скрыто от текущего пользователя
+        size:
+          type: integer
+    FriendGoing:
+      type: object
+      description: Друг, который идёт на мероприятие. Имя клиент получает у identity-service по `user_id`.
+      required: [user_id, status, source]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/RegistrationStatus'
+        source:
+          $ref: '#/components/schemas/RegistrationSource'
+    FriendGoingPage:
+      type: object
+      required: [items, total, page, size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FriendGoing'
+        total:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
     TicketSettingsRequest:
       type: object
       required: [price, quantity, sales_open]
