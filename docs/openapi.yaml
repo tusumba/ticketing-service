@@ -289,6 +289,10 @@ paths:
         Уменьшить количество ниже числа проданных и зарезервированных билетов нельзя.
         Настроить продажу можно только для платного мероприятия (`is_free = false` у events-service).
         Если мероприятие было бесплатным и на него уже есть бесплатные записи, настроить продажу нельзя.
+        Ошибки из требования #18099: «Цена билета должна быть не меньше 0.»,
+        «Количество билетов должно быть больше 0.», «Нельзя уменьшить количество билетов ниже уже проданного.»,
+        «У вас нет прав на настройку билетов.»; при ответе 5xx клиент показывает
+        «Не удалось сохранить настройки билетов. Попробуйте позже.»
       requestBody:
         required: true
         content:
@@ -305,20 +309,47 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: '`forbidden` - пользователь не владелец и не администратор мероприятия.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: forbidden
+                  message: У вас нет прав на настройку билетов.
         '404':
           $ref: '#/components/responses/EventNotFound'
         '409':
           description: |
-            `quantity_below_sold` - количество меньше уже проданных и зарезервированных билетов;
+            `quantity_below_sold` - количество меньше уже проданных и зарезервированных билетов,
+            «Нельзя уменьшить количество билетов ниже уже проданного.»;
             `event_is_free` - мероприятие бесплатное, настройка продажи не нужна;
             `event_has_registrations` - на мероприятие уже есть записи с `source = free_signup`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: quantity_below_sold
+                  message: Нельзя уменьшить количество билетов ниже уже проданного.
         '422':
-          $ref: '#/components/responses/ValidationError'
+          description: |
+            `validation_error` - цена или количество не прошли проверку; тексты в `details` из #18099:
+            `price.amount` - «Цена билета должна быть не меньше 0.»,
+            `quantity` - «Количество билетов должно быть больше 0.»
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: validation_error
+                  message: Проверьте введённые данные.
+                  details:
+                    - field: quantity
+                      message: Количество билетов должно быть больше 0.
   /v1/events/{id}/purchases:
     parameters:
       - $ref: '#/components/parameters/EventId'
@@ -334,6 +365,11 @@ paths:
         Если оплата не пришла до `expires_at`, фоновая задача возвращает билеты в продажу.
         Заголовок Idempotency-Key защищает от двойной покупки при повторе запроса:
         повтор с тем же ключом возвращает уже созданную покупку.
+        Ошибки из требования #18114: «Недостаточно доступных билетов.» (сколько билетов осталось,
+        клиент показывает по `available` из `GET /v1/events/{id}/ticket-settings`);
+        «Оплата не прошла. Попробуйте ещё раз.» и «Покупка отменена. Билет не создан.» - по статусу покупки
+        (см. `PurchaseStatus`); «Войдите, чтобы купить билет.» клиент показывает на 401;
+        при ответе 5xx клиент показывает «Не удалось создать билет. Обратитесь в поддержку.»
       parameters:
         - name: Idempotency-Key
           in: header
@@ -361,7 +397,7 @@ paths:
           $ref: '#/components/responses/EventNotFound'
         '409':
           description: |
-            `tickets_sold_out` - свободных билетов меньше, чем запрошено;
+            `tickets_sold_out` - свободных билетов меньше, чем запрошено, «Недостаточно доступных билетов.»;
             `sales_closed` - продажа не настроена, не открыта или мероприятие прошло;
             `event_is_free` - мероприятие бесплатное, нужна запись.
           content:
@@ -371,7 +407,7 @@ paths:
               example:
                 error:
                   code: tickets_sold_out
-                  message: Билеты закончились.
+                  message: Недостаточно доступных билетов.
         '422':
           $ref: '#/components/responses/ValidationError'
         '502':
@@ -501,7 +537,7 @@ components:
               code: forbidden
               message: Недостаточно прав.
     EventNotFound:
-      description: '`event_not_found` - мероприятие не найдено.'
+      description: '`event_not_found` - мероприятие не найдено или недоступно (текст как в Events, #18113).'
       content:
         application/json:
           schema:
@@ -509,7 +545,7 @@ components:
           example:
             error:
               code: event_not_found
-              message: Мероприятие не найдено.
+              message: Мероприятие недоступно.
     ValidationError:
       description: '`validation_error` - тело или параметры запроса не прошли проверку.'
       content:
@@ -757,7 +793,9 @@ components:
         pending - билеты зарезервированы, ждём оплату;
         paid - оплачено, билеты выданы;
         expired - время резерва вышло, билеты вернулись в продажу;
-        failed - платёж отклонён, билеты вернулись в продажу.
+        клиент показывает «Покупка отменена. Билет не создан.» (#18114);
+        failed - платёж отклонён или отменён, билеты вернулись в продажу;
+        клиент показывает «Оплата не прошла. Попробуйте ещё раз.» (#18114).
       enum: [pending, paid, expired, failed]
     Purchase:
       type: object
