@@ -157,7 +157,9 @@
 
 | HTTP | code | Когда |
 |---|---|---|
-| 401 | unauthorized | Нет токена или токен недействителен |
+| 401 | not_authenticated | Нет заголовка Authorization (tusumba-common) |
+| 401 | token_expired | Срок действия access-токена истёк (tusumba-common) |
+| 401 | invalid_token | Токен недействителен или не access (tusumba-common) |
 | 403 | forbidden | Нет нужной роли в команде мероприятия |
 | 404 | event_not_found | Мероприятие не найдено |
 | 404 | registration_not_found | Пользователь не записан на мероприятие |
