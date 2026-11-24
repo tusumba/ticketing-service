@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     rabbitmq_url: SecretStr
     outbox_poll_seconds: float = Field(default=1.0, gt=0)
     events_url: str = "http://events:8000"
+    # Кеш ответов прав Events (tusumba-common); без адреса клиент прав ходит в Events без кеша.
+    redis_url: SecretStr | None = None
 
     @field_validator("database_url")
     @classmethod
