@@ -8,6 +8,7 @@ from tusumba_common import install_error_handlers
 
 from app.api import health, internal, v1
 from app.clients.events import EventsClient
+from app.clients.permissions import create_permissions_client, create_redis
 from app.db import create_engine, create_sessionmaker
 from app.events import publish_pending
 from app.logging import configure_logging
@@ -24,6 +25,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = create_engine(settings)
         app.state.sessionmaker = create_sessionmaker(engine)
         app.state.events_client = EventsClient(settings.events_url)
+        redis = create_redis(settings)
+        app.state.permissions_client = create_permissions_client(settings, redis)
         broker = RabbitBroker(settings.rabbitmq_url.get_secret_value())
         app.state.broker = broker
         scheduler = AsyncIOScheduler()
@@ -44,6 +47,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 scheduler.shutdown(wait=True)
             await broker.stop()
             await app.state.events_client.aclose()
+            await app.state.permissions_client.aclose()
+            if redis is not None:
+                await redis.aclose()
             await engine.dispose()
 
     app = FastAPI(title=settings.service_name, lifespan=lifespan)

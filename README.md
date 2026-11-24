@@ -37,9 +37,10 @@ Python 3.12, FastAPI, SQLAlchemy 2 (async), Alembic, PostgreSQL 16, RabbitMQ (Fa
 - `DELETE /v1/events/{id}/registration` - отмена записи; запись по купленному билету и запись на прошедшее мероприятие не отменяются;
 - `GET /v1/me/registrations` - мои записи, новые первыми, пагинация `page` и `size`;
 - признак `is_free`, дату и статус мероприятия сервис берёт у events-service (`GET /internal/events/{id}`); мероприятие прошло, если его дата раньше сегодняшней по Новосибирску или статус `held`, `not_held`;
-- после создания, изменения или отмены записи в брокер через outbox уходит `RegistrationChanged`.
+- после создания, изменения или отмены записи в брокер через outbox уходит `RegistrationChanged`;
+- `GET /v1/events/{id}/participants` - участники мероприятия в порядке записи, видят владелец и администратор, остальные получают 403; у анонимного участника `user_id` равен null (#19052). Роль проверяется через `PermissionsClient` из tusumba-common, ответ Events кешируется в Redis.
 
-Продажа и покупка билетов, участники и «кто из друзей идёт» - в следующих задачах.
+Продажа и покупка билетов и «кто из друзей идёт» - в следующих задачах.
 
 ## Запуск
 
@@ -59,6 +60,7 @@ uv run --env-file .env uvicorn app.main:create_app --factory --reload
 | `DATABASE_URL` | обязательна | `postgresql+asyncpg://user:password@host:5432/db` |
 | `RABBITMQ_URL` | обязательна | адрес RabbitMQ |
 | `EVENTS_URL` | `http://events:8000` | адрес events-service для `/internal` |
+| `REDIS_URL` | пусто | кеш прав на мероприятие; без него права запрашиваются у Events каждый раз |
 | `JWT_PUBLIC_KEY` | обязательна | публичный ключ Identity в PEM (tusumba-common) |
 | `SERVICE_TOKEN` | обязательна | сервисный токен для `X-Service-Token` (tusumba-common) |
 
