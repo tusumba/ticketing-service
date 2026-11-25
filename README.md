@@ -77,6 +77,7 @@ uv run pytest
 
 - [OpenAPI v1](docs/openapi.yaml) - API раздела «Билеты и записи» архитектуры.
 - [Модель данных](docs/data-model.md) - таблицы записей, билетов, резервов и платежей, коды ошибок.
+- [Сценарий оплаты](docs/purchase-flow.md) - статусы покупки и платежа, успех, отказ, повторный webhook, просроченный резерв (Спринт 3).
 
 Wiki проекта: https://ai.nsu.ru/projects/tusumba/wiki/Архитектура. Контракт API: OpenAPI v1 (#18892). Задачи ведутся в Redmine: https://ai.nsu.ru/projects/tusumba. Issues и Wiki GitHub выключены.
 

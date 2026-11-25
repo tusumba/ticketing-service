@@ -5,7 +5,8 @@
 раздел «Ticketing & Payments (ticketing_db)».
 
 Таблицы продажи (`ticket_sales_settings`, `tickets`, `reservations`, `payments`, `sales_stats`) - черновик,
-реализация в Спринте 3. Суммы хранятся в копейках (`integer`), валюта - `RUB`.
+реализация в Спринте 3, сценарий оплаты - в [purchase-flow.md](purchase-flow.md).
+Суммы хранятся в копейках (`integer`), валюта - `RUB`.
 
 ## registrations
 
@@ -82,6 +83,13 @@
 Уникальность: (`user_id`, `idempotency_key`) - защита от двойной покупки.
 Индекс: (`status`, `expires_at`) - фоновая задача ищет просроченные резервы.
 
+- `pending` - билеты зарезервированы, ждём оплату;
+- `paid` - платёж подтверждён, билеты проданы;
+- `failed` - платёж отменён или не создан у провайдера, билеты вернулись в продажу;
+- `expired` - резерв истёк без оплаты, билеты вернулись в продажу.
+
+`paid`, `failed`, `expired` - конечные статусы. `total_amount` фиксируется при резерве.
+
 ## payments
 
 Платежи у платёжного провайдера.
@@ -89,17 +97,27 @@
 | Поле | Тип | Ключ |
 |---|---|---|
 | id | uuid | PK |
-| reservation_id | uuid | FK → reservations.id |
+| reservation_id | uuid | FK → reservations.id, UNIQUE |
 | provider | text | |
-| provider_payment_id | text | UNIQUE |
+| provider_payment_id | text, null | UNIQUE |
 | amount | integer | |
 | currency | text | |
-| status | enum (created, succeeded, failed, cancelled) | |
+| status | enum (created, pending, authorized, succeeded, cancelled, failed) | |
 | confirmation_url | text, null | |
 | created_at | timestamptz | |
 | updated_at | timestamptz | |
 
-`provider_payment_id` уникален: повторный webhook находит тот же платёж и не обрабатывает его второй раз.
+Один платёж на покупку: повторная попытка оплаты - новая покупка.
+
+- `created` - строка создана вместе с резервом, у провайдера платежа ещё нет (`provider_payment_id` пустой);
+- `pending` - платёж создан у провайдера, есть `confirmation_url`;
+- `authorized` - покупатель оплатил, деньги заблокированы, ждут подтверждения (двухстадийная оплата);
+- `succeeded` - платёж подтверждён, деньги списаны;
+- `cancelled` - отменён покупателем, банком, провайдером или Ticketing (резерв истёк);
+- `failed` - провайдер недоступен или отказал при создании платежа.
+
+Статус меняется только вперёд. `provider_payment_id` уникален: повторный webhook находит тот же платёж
+и не обрабатывает его второй раз.
 
 ## sales_stats
 
@@ -123,16 +141,20 @@
 
 ## Жизненный цикл покупки (Спринт 3)
 
+Подробно, со сценариями успеха, отказа, повторного webhook и просроченного резерва -
+в [purchase-flow.md](purchase-flow.md).
+
 1. `POST /v1/events/{id}/purchases`: в одной транзакции выбираются `quantity` билетов со статусом `available`
-   (`SELECT ... FOR UPDATE SKIP LOCKED`), они переходят в `reserved`, создаётся `reservations` (`pending`,
-   `expires_at` = сейчас + 15 минут) и `payments` (`created`) у провайдера.
-2. Webhook об успешной оплате: `payments.status` → `succeeded`, `reservations.status` → `paid`,
-   билеты → `sold`, создаётся `registrations` (`source = ticket`; если запись уже есть, вторая не создаётся),
-   обновляется `sales_stats`, публикуется `TicketPurchased`.
-3. Webhook о неудачной оплате или отмене: `payments.status` → `failed` или `cancelled`,
-   `reservations.status` → `failed`, билеты → `available`.
-4. Фоновая задача: резервы `pending` с прошедшим `expires_at` → `expired`, `payments.status` → `cancelled`,
-   билеты → `available`.
+   (`SELECT ... FOR UPDATE SKIP LOCKED`), они переходят в `reserved`, создаются `reservations` (`pending`,
+   `expires_at` = сейчас + 15 минут) и `payments` (`created`). После транзакции платёж создаётся
+   у провайдера (двухстадийная оплата), `payments.status` → `pending`.
+2. Webhook: статус платежа запрашивается у провайдера. `authorized` при покупке `pending` - capture,
+   `payments.status` → `succeeded`, `reservations.status` → `paid`, билеты → `sold`, создаётся `registrations`
+   (`source = ticket`; если запись уже есть, вторая не создаётся), обновляется `sales_stats`,
+   публикуется `TicketPurchased`. `authorized` при покупке не в `pending` - платёж отменяется у провайдера.
+3. Webhook об отмене: `payments.status` → `cancelled`, `reservations.status` → `failed`, билеты → `available`.
+4. Фоновая задача: резервы `pending` с прошедшим `expires_at` - статус платежа запрашивается у провайдера;
+   если оплаты нет, `reservations.status` → `expired`, `payments.status` → `cancelled`, билеты → `available`.
 
 ## API
 
@@ -173,6 +195,7 @@
 | 409 | event_has_registrations | Настройка продажи, когда уже есть записи с `source = free_signup` |
 | 409 | quantity_below_sold | Билетов меньше, чем продано и зарезервировано |
 | 409 | tickets_sold_out | Свободных билетов меньше, чем запрошено |
+| 409 | idempotency_key_reused | Idempotency-Key уже использован для другой покупки |
 | 409 | sales_closed | Продажа не настроена, не открыта или мероприятие прошло |
 | 422 | validation_error | Тело или параметры запроса не прошли проверку |
 | 400 | invalid_signature | Подпись webhook не прошла проверку |
